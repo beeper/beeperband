@@ -63,6 +63,7 @@
 #include "bsp_btn_ble.h"
 #include "sensorsim.h"
 #include "ble_conn_state.h"
+#include "nrf_delay.h"
 #include "nrf_ble_gatt.h"
 #include "nrf_ble_qwr.h"
 #include "nrf_pwr_mgmt.h"
@@ -72,6 +73,7 @@
 #include "nrf_log_default_backends.h"
 
 #include "nrfx_spim.h"
+#include "nrfx_twim.h"
 #include "nrfx_gpiote.h"
 
 
@@ -402,6 +404,7 @@ static void idle_state_handle(void)
 #define P_BTN5      NRF_GPIO_PIN_MAP(1,5)
 #define P_BTN6      NRF_GPIO_PIN_MAP(1,6)
 
+
 static uint8_t _spim_npxl_txbuf[512];
 static const nrfx_spim_t spi = NRFX_SPIM_INSTANCE(0);
 
@@ -462,6 +465,137 @@ static void _spim_npxl_bytes(const uint8_t *bytes, int nbytes) {
     nrfx_spim_xfer(&spi, &xfer_desc, 0);
     while (!spi_xfer_done)
         ;
+}
+
+#define P_SCL       NRF_GPIO_PIN_MAP(0, 11)
+#define P_SDA       NRF_GPIO_PIN_MAP(0, 12)
+#define P_HAP_EN    NRF_GPIO_PIN_MAP(0, 26)
+#define P_HAP_IN    NRF_GPIO_PIN_MAP(0, 27)
+#define DRV2605_ADR (0x5A)
+
+#define LOG_SYNC(...) do { NRF_LOG_INFO(__VA_ARGS__); while (NRF_LOG_PROCESS()); } while(0)
+
+static const nrfx_twim_t i2c = NRFX_TWIM_INSTANCE(1);
+static volatile int i2c_done = 0;
+
+static void _i2c_evt(const nrfx_twim_evt_t *evt, void *ctx) {
+    if (evt->type == NRFX_TWIM_EVT_DONE) {
+//        NRF_LOG_INFO("NRFX_TWIM_EVT_DONE");
+    } else if (evt->type == NRFX_TWIM_EVT_ADDRESS_NACK) {
+        NRF_LOG_INFO("NRFX_TWIM_ADDRESS_NACK");
+    } else if (evt->type == NRFX_TWIM_EVT_DATA_NACK) {
+        NRF_LOG_INFO("NRFX_TWIM_DATA_NACK");
+    } else if (evt->type == NRFX_TWIM_EVT_OVERRUN) {
+        NRF_LOG_INFO("NRFX_TWIM_OVERRUN");
+    } else if (evt->type == NRFX_TWIM_EVT_BUS_ERROR) {
+        NRF_LOG_INFO("NRFX_TWIM_BUS_ERROR");
+    }
+    i2c_done = 1;
+}
+
+static void _i2c_drv2605_write(uint8_t reg, uint8_t val) {
+    ret_code_t rv;
+
+    while (nrfx_twim_is_busy(&i2c))
+        ;
+
+    uint8_t txbuf[2] = { reg, val };
+    nrfx_twim_xfer_desc_t desc = {
+        .type = NRFX_TWIM_XFER_TX,
+        .address = DRV2605_ADR,
+        .primary_length = 2,
+        .p_primary_buf = txbuf,
+    };
+    
+    i2c_done = 0;
+    rv = nrfx_twim_xfer(&i2c, &desc, 0);
+    APP_ERROR_CHECK(rv);
+
+    while (nrfx_twim_is_busy(&i2c) || !i2c_done)
+        ;
+
+    LOG_SYNC("DRV2605: %02x <- %02x", reg, val);
+}
+
+static uint8_t _i2c_drv2605_read(uint8_t reg) {
+    ret_code_t rv;
+
+    while (nrfx_twim_is_busy(&i2c))
+        ;
+
+    uint8_t rxbuf;
+    nrfx_twim_xfer_desc_t desc = {
+        .type = NRFX_TWIM_XFER_TXRX,
+        .address = DRV2605_ADR,
+        .primary_length = 1,
+        .p_primary_buf = &reg,
+        .secondary_length = 1,
+        .p_secondary_buf = &rxbuf,
+    };
+    
+    i2c_done = 0;
+    rv = nrfx_twim_xfer(&i2c, &desc, 0);
+    APP_ERROR_CHECK(rv);
+
+    while (nrfx_twim_is_busy(&i2c) && !i2c_done)
+        ;
+
+    return rxbuf;
+}
+
+static void _i2c_drv2605_autocal() {
+    LOG_SYNC("running DRV2605 autocalibration");
+    _i2c_drv2605_write(0x01, 0x07); /* enter autocal mode*/
+    _i2c_drv2605_write(0x1A /* FEEDBACK */, (1 << 7 /* LRA */) | (2 << 4 /* FB_BRAKE_FACTOR = 2 */) | (2 << 2 /* LOOP_GAIN = 2 */) | (2 << 0 /* BEMF_GAIN = default */));
+    /* RATED_VOLTAGE: 1.8V = 81, according to this hokey formula:
+     * https://android.googlesource.com/kernel/msm/+/ea5a03d280ea957b533b4938afc628aa6e323a4a/drivers/misc/drv2605.c#89
+     */
+    _i2c_drv2605_write(0x16 /* RATED_VOLTAGE */, 81);
+    /* leave OD_CLAMP alone, I guess */
+    _i2c_drv2605_write(0x1E /* CONTROL4 */, (3 << 4 /* AUTO_CAL_TIME */));
+    /* DRIVE_TIME default at 0x13 */
+    _i2c_drv2605_write(0x1C /* CONTROL2 */, (1 << 7 /* BIDIR_INPUT */) | (1 << 6 /* BRAKE_STABILIZER */) | (3 << 4 /* SAMPLE_TIME */) | (1 << 2 /* BLANKING_TIME */) | (1 << 0 /* IDISS_TIME */));
+    _i2c_drv2605_write(0x0C, 0x01); /* GO */
+    while (_i2c_drv2605_read(0x0C) & 1) /* GO */
+        ;
+    if (_i2c_drv2605_read(0x00) & 8 /* DIAG_RESULT */) {
+        LOG_SYNC("DRV2605 autocalibration failed");
+    }
+    _i2c_drv2605_write(0x01, 0x00); /* enter normal mode */
+    LOG_SYNC("DRV2605: autocalibration complete");
+}
+
+static void _i2c_drv2605_setup() {
+    ret_code_t rv;
+    nrf_gpio_cfg_output(P_HAP_EN);
+    nrf_gpio_cfg_output(P_HAP_IN);
+    nrf_gpio_pin_write(P_HAP_IN, 0);
+    nrf_gpio_pin_write(P_HAP_EN, 0);
+    nrf_delay_ms(5);
+    nrf_gpio_pin_write(P_HAP_EN, 1);
+
+    nrfx_twim_config_t config = {
+        .scl = P_SCL,
+        .sda = P_SDA,
+        .frequency = NRF_TWIM_FREQ_100K,
+    };
+    rv = nrfx_twim_init(&i2c, &config, _i2c_evt, NULL);
+    APP_ERROR_CHECK(rv);
+    nrfx_twim_enable(&i2c);
+    
+    LOG_SYNC("DRV2605: reg 0 val %d", _i2c_drv2605_read(0));
+    _i2c_drv2605_autocal();
+    _i2c_drv2605_write(0x03 /* LIBRARY_SEL */, 6 /* LRA library */);
+}
+
+static void _i2c_drv2605_run(uint8_t program) {
+    _i2c_drv2605_write(0x04, program);
+    _i2c_drv2605_write(0x05, 0);
+    _i2c_drv2605_write(0x0C, 0x01); /* GO */
+}
+
+static int _i2c_drv2605_is_done() {
+    return !(_i2c_drv2605_read(0x0C) & 1);
 }
 
 #define CMDQ_RINGBUF_LEN 512
@@ -649,13 +783,15 @@ int main(void)
 
     NRF_LOG_INIT(NULL);
     NRF_LOG_DEFAULT_BACKENDS_INIT();
-    NRF_LOG_INFO("BEEPER: beeperband init");
+    LOG_SYNC("BEEPER: beeperband init");
 
     const uint8_t poweron[] = { 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 };
     const uint8_t ble_adv[] = { 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     const uint8_t ble_conn[] = { 0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF };
     _spim_npxl_setup();
     _spim_npxl_bytes(poweron, sizeof(poweron));
+    
+    _i2c_drv2605_setup();
 
     ret_code_t err_code = app_timer_init();
     APP_ERROR_CHECK(err_code);
@@ -676,7 +812,7 @@ int main(void)
          * this actually just push commands to the command queue?)
          */
         if (sys_state != last_state) {
-            NRF_LOG_INFO("change sys state -> %d", sys_state);
+            LOG_SYNC("change sys state -> %d", sys_state);
             if (sys_state == STATE_ADVERTISING) {
                 _spim_npxl_bytes(ble_adv, sizeof(ble_adv));
             } else if (sys_state == STATE_CONNECTED) {
@@ -691,16 +827,34 @@ int main(void)
             case '\x01': {
                 uint8_t npxlbuf[10];
                 if (beeper_cmdq_ringbuf_take(npxlbuf, 10) == 10) {
-                    NRF_LOG_INFO("BEEPER: set neopixel");
+                    LOG_SYNC("BEEPER: set neopixel");
                     _spim_npxl_bytes(npxlbuf + 1, 9);
                 }
                 break;
             }
+            case '\x02': {
+                uint8_t buzzbuf[2];
+                if (!_i2c_drv2605_is_done())
+                    continue;
+                if (beeper_cmdq_ringbuf_take(buzzbuf, 2) == 2) {
+                    LOG_SYNC("BEEPER: buzz %02x", buzzbuf[1]);
+                    _i2c_drv2605_run(buzzbuf[1]);
+                }
+                break;
+            }
+            case '\x03': {
+                if (!_i2c_drv2605_is_done())
+                    continue;
+                LOG_SYNC("BEEPER: buzz complete");
+                uint8_t c;
+                beeper_cmdq_ringbuf_take(&c, 1);
+                break;
+            }
             /* wait command? */
-            /* buzzer command? */
+            /* fade LEDs? */
             default: {
                 uint8_t c;
-                NRF_LOG_INFO("BEEPER: unknown opcode 0x%02x", beeper_cmdq_ringbuf[beeper_cmdq_ringbuf_consp]);
+                LOG_SYNC("BEEPER: unknown opcode 0x%02x", beeper_cmdq_ringbuf[beeper_cmdq_ringbuf_consp]);
                 beeper_cmdq_ringbuf_take(&c, 1);
                 break;
             }
