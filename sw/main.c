@@ -574,6 +574,13 @@ static void _i2c_drv2605_autocal() {
     LOG_SYNC("DRV2605: autocalibration complete");
 }
 
+int _i2c_drv2605_is_in_standby = 0;
+
+static void _i2c_drv2605_standby(int stby) {
+    _i2c_drv2605_is_in_standby = stby;
+    _i2c_drv2605_write(0x01, stby ? 0x40 /* STANDBY */ : 0x00 /* NORMAL */);
+}
+
 static void _i2c_drv2605_setup() {
     ret_code_t rv;
     nrf_gpio_cfg_output(P_HAP_EN);
@@ -595,9 +602,11 @@ static void _i2c_drv2605_setup() {
     LOG_SYNC("DRV2605: reg 0 val %d", _i2c_drv2605_read(0));
     _i2c_drv2605_autocal();
     _i2c_drv2605_write(0x03 /* LIBRARY_SEL */, 6 /* LRA library */);
+    _i2c_drv2605_standby(1);
 }
 
 static void _i2c_drv2605_run(uint8_t program) {
+    _i2c_drv2605_standby(0);
     _i2c_drv2605_write(0x04, program);
     _i2c_drv2605_write(0x05, 0);
     _i2c_drv2605_write(0x0C, 0x01); /* GO */
@@ -606,6 +615,7 @@ static void _i2c_drv2605_run(uint8_t program) {
 static int _i2c_drv2605_is_done() {
     return !(_i2c_drv2605_read(0x0C) & 1);
 }
+
 
 #define CMDQ_RINGBUF_LEN 512
 static int beeper_cmdq_ringbuf_prodp = 0;
@@ -828,6 +838,15 @@ int main(void)
                 _spim_npxl_bytes(ble_conn, sizeof(ble_conn));
             }
             last_state = sys_state;
+        }
+        
+        /* shut down the drv2605 if it is not in standby already */
+        if (!_i2c_drv2605_is_in_standby && _i2c_drv2605_is_done()) {
+            /* note that the request will trigger another interrupt later... 
+             * so we could spin here burning power indefinitely if we are not
+             * careful!  this is why the is_in_standby check is here.
+             */
+            _i2c_drv2605_standby(1);
         }
 
         /* command to execute? */
