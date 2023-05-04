@@ -434,6 +434,15 @@ static void _spim_npxl_setup() {
 static void _spim_npxl_bytes(const uint8_t *bytes, int nbytes) {
     int obytes = 0;
     int obit = 0;
+    uint8_t zeroes[9] = {};
+    
+    /* If we're setting all zeroes, then we can just shut down the NeoPixel
+     * power entirely.  */
+    if (nbytes == 9 && !memcmp(bytes, zeroes, 9)) {
+        nrf_gpio_pin_write(P_NEOPIX_EN, 0);
+    } else {
+        nrf_gpio_pin_write(P_NEOPIX_EN, 1);
+    }
 
 #define PUTBIT(b) do { \
     _spim_npxl_txbuf[obytes] |= (!!(b)) << (7 - obit); \
