@@ -75,6 +75,7 @@
 #include "nrfx_spim.h"
 #include "nrfx_twim.h"
 #include "nrfx_gpiote.h"
+#include "nrfx_power.h"
 
 
 #define DEVICE_NAME                     "BeeperBand"                            /**< Name of device. Will be included in the advertising data. */
@@ -377,6 +378,13 @@ static void power_management_init(void)
 {
     ret_code_t err_code;
     err_code = nrf_pwr_mgmt_init();
+    APP_ERROR_CHECK(err_code);
+    
+    nrfx_power_config_t pcfg = {
+        .dcdcen = 1,
+        .dcdcenhv = 1,
+    };
+    err_code = nrfx_power_init(&pcfg);
     APP_ERROR_CHECK(err_code);
 }
 
