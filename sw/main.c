@@ -806,7 +806,7 @@ int main(void)
     nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(1,15));
     nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(1,10));
     nrf_gpio_pin_write(NRF_GPIO_PIN_MAP(1, 15), 0);
-    nrf_gpio_pin_write(NRF_GPIO_PIN_MAP(1, 10), 1);
+    nrf_gpio_pin_write(NRF_GPIO_PIN_MAP(1, 10), 0);
 
     NRF_LOG_INIT(NULL);
     NRF_LOG_DEFAULT_BACKENDS_INIT();
