@@ -77,6 +77,22 @@
 #include "nrfx_gpiote.h"
 #include "nrfx_power.h"
 
+#define P_NEOPIX_EN NRF_GPIO_PIN_MAP(1,7)
+#define P_NEOPIX    NRF_GPIO_PIN_MAP(0,16)
+#define P_BTN1      NRF_GPIO_PIN_MAP(1,1)
+#define P_BTN2      NRF_GPIO_PIN_MAP(1,2)
+#define P_BTN3      NRF_GPIO_PIN_MAP(1,3)
+#define P_BTN4      NRF_GPIO_PIN_MAP(1,4)
+#define P_BTN5      NRF_GPIO_PIN_MAP(1,5)
+#define P_BTN6      NRF_GPIO_PIN_MAP(1,6)
+#define P_SCL       NRF_GPIO_PIN_MAP(0, 11)
+#define P_SDA       NRF_GPIO_PIN_MAP(0, 12)
+#define P_HAP_EN    NRF_GPIO_PIN_MAP(0, 26)
+#define P_HAP_IN    NRF_GPIO_PIN_MAP(0, 27)
+#define P_LED1      NRF_GPIO_PIN_MAP(1,15)
+#define P_LED2      NRF_GPIO_PIN_MAP(1,10)
+#define P_VIDV_EN   NRF_GPIO_PIN_MAP(0,8)
+#define P_CE_N      NRF_GPIO_PIN_MAP(1,11)
 
 #define DEVICE_NAME                     "BeeperBand"                            /**< Name of device. Will be included in the advertising data. */
 #define MANUFACTURER_NAME               "Beeper"                                /**< Manufacturer. Will be passed to Device Information Service. */
@@ -403,16 +419,6 @@ static void idle_state_handle(void)
 
 /* Neopixel SPI I/O routines */
 
-#define P_NEOPIX_EN NRF_GPIO_PIN_MAP(1,7)
-#define P_NEOPIX    NRF_GPIO_PIN_MAP(0,16)
-#define P_BTN1      NRF_GPIO_PIN_MAP(1,1)
-#define P_BTN2      NRF_GPIO_PIN_MAP(1,2)
-#define P_BTN3      NRF_GPIO_PIN_MAP(1,3)
-#define P_BTN4      NRF_GPIO_PIN_MAP(1,4)
-#define P_BTN5      NRF_GPIO_PIN_MAP(1,5)
-#define P_BTN6      NRF_GPIO_PIN_MAP(1,6)
-
-
 static uint8_t _spim_npxl_txbuf[512];
 static const nrfx_spim_t spi = NRFX_SPIM_INSTANCE(0);
 
@@ -484,10 +490,6 @@ static void _spim_npxl_bytes(const uint8_t *bytes, int nbytes) {
         ;
 }
 
-#define P_SCL       NRF_GPIO_PIN_MAP(0, 11)
-#define P_SDA       NRF_GPIO_PIN_MAP(0, 12)
-#define P_HAP_EN    NRF_GPIO_PIN_MAP(0, 26)
-#define P_HAP_IN    NRF_GPIO_PIN_MAP(0, 27)
 #define DRV2605_ADR (0x5A)
 
 #define LOG_SYNC(...) do { NRF_LOG_INFO(__VA_ARGS__); while (NRF_LOG_PROCESS()); } while(0)
@@ -560,6 +562,8 @@ static uint8_t _i2c_drv2605_read(uint8_t reg) {
     return rxbuf;
 }
 
+
+
 static void _i2c_drv2605_autocal() {
     LOG_SYNC("running DRV2605 autocalibration");
     _i2c_drv2605_write(0x01, 0x07); /* enter autocal mode*/
@@ -623,6 +627,61 @@ static void _i2c_drv2605_run(uint8_t program) {
 static int _i2c_drv2605_is_done() {
     return !(_i2c_drv2605_read(0x0C) & 1);
 }
+
+#define BQ25618_ADR 0x6A
+
+/*
+static void _i2c_bq25618_write(uint8_t reg, uint8_t val) {
+    ret_code_t rv;
+
+    while (nrfx_twim_is_busy(&i2c))
+        ;
+
+    uint8_t txbuf[2] = { reg, val };
+    nrfx_twim_xfer_desc_t desc = {
+        .type = NRFX_TWIM_XFER_TX,
+        .address = BQ25618_ADR,
+        .primary_length = 2,
+        .p_primary_buf = txbuf,
+    };
+    
+    i2c_done = 0;
+    rv = nrfx_twim_xfer(&i2c, &desc, 0);
+    APP_ERROR_CHECK(rv);
+
+    while (nrfx_twim_is_busy(&i2c) || !i2c_done)
+        ;
+
+    LOG_SYNC("BQ25618: %02x <- %02x", reg, val);
+}
+*/
+
+static uint8_t _i2c_bq25618_read(uint8_t reg) {
+    ret_code_t rv;
+
+    while (nrfx_twim_is_busy(&i2c))
+        ;
+
+    uint8_t rxbuf;
+    nrfx_twim_xfer_desc_t desc = {
+        .type = NRFX_TWIM_XFER_TXRX,
+        .address = BQ25618_ADR,
+        .primary_length = 1,
+        .p_primary_buf = &reg,
+        .secondary_length = 1,
+        .p_secondary_buf = &rxbuf,
+    };
+    
+    i2c_done = 0;
+    rv = nrfx_twim_xfer(&i2c, &desc, 0);
+    APP_ERROR_CHECK(rv);
+
+    while (nrfx_twim_is_busy(&i2c) && !i2c_done)
+        ;
+
+    return rxbuf;
+}
+
 
 
 #define CMDQ_RINGBUF_LEN 512
@@ -803,14 +862,48 @@ out:
  */
 int main(void)
 {
-    nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(1,15));
-    nrf_gpio_cfg_output(NRF_GPIO_PIN_MAP(1,10));
-    nrf_gpio_pin_write(NRF_GPIO_PIN_MAP(1, 15), 0);
-    nrf_gpio_pin_write(NRF_GPIO_PIN_MAP(1, 10), 0);
+    nrf_gpio_cfg_output(P_LED1);
+    nrf_gpio_cfg_output(P_LED2);
+    nrf_gpio_pin_write(P_LED1, 0);
+    nrf_gpio_pin_write(P_LED2, 0);
+    nrf_gpio_cfg_output(P_NEOPIX_EN);
+    nrf_gpio_pin_write(P_NEOPIX_EN, 0);
+    nrf_gpio_cfg_output(P_NEOPIX);
+    nrf_gpio_pin_write(P_NEOPIX, 0);
+    nrf_gpio_cfg_output(P_HAP_EN);
+    nrf_gpio_pin_write(P_HAP_EN, 0);
+    nrf_gpio_cfg_output(P_VIDV_EN);
+    nrf_gpio_pin_write(P_VIDV_EN, 0);
+    
+    // ce_n notes:
+    //   ce_n = 0 (charge enable), usb disconnected: 1.10 mA
+    //   ce_n = 1 (charge disable), usb disconnected: 1.13 mA (+30 uA, expected for leakage through R6+R9)
+    //   ce_n = 1 (charge enable), usb connected: 18 uA (with SYSTEMOFF or without SYSTEMOFF, so seems to be balancing input power)
+    nrf_gpio_cfg_output(P_CE_N);
+    nrf_gpio_pin_write(P_CE_N, 0);
 
     NRF_LOG_INIT(NULL);
     NRF_LOG_DEFAULT_BACKENDS_INIT();
     LOG_SYNC("BEEPER: beeperband init");
+
+    _i2c_drv2605_setup();
+    nrf_gpio_pin_write(P_HAP_EN, 0);
+
+    for (int i = 0; i < 0x0D; i++) {
+        LOG_SYNC("BQ25618 0x%02x = 0x%02x", i, _i2c_bq25618_read(i));
+    }
+    
+    NRF_POWER->SYSTEMOFF = 1;
+    
+    while(1);
+    power_management_init();
+    ble_stack_init();
+    while (1) {
+        nrf_pwr_mgmt_run();
+        //__asm__ volatile("cpsid i");
+        //__WFI();
+    }
+
 
     const uint8_t poweron[] = { 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0x00 };
     const uint8_t ble_adv[] = { 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -818,7 +911,6 @@ int main(void)
     _spim_npxl_setup();
     _spim_npxl_bytes(poweron, sizeof(poweron));
     
-    _i2c_drv2605_setup();
 
     ret_code_t err_code = app_timer_init();
     APP_ERROR_CHECK(err_code);
